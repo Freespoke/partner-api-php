@@ -168,6 +168,10 @@ An epoch is a unix timestamp. If the most recent moment at which a URL was publi
 
 The client does not swallow HTTP or network errors. Guzzle will throw a `RequestException` for non-2xx responses and transport failures. Wrap calls in `try/catch` if you want to handle these explicitly.
 
+## Further Reading
+
+Visit the [Integration Guide](https://docs.freespoke.com/developers/partner-api/) for more information.
+
 ## Testing
 
 ```bash
