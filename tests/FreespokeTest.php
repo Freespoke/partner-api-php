@@ -4,9 +4,11 @@ declare(strict_types=1);
 
 namespace Freespoke\Partner\Tests;
 
+use Freespoke\Partner\APIKeyAuthProvider;
 use Freespoke\Partner\Article;
 use Freespoke\Partner\Client as PartnerClient;
 use Freespoke\Partner\Person;
+use Freespoke\Partner\TokenAuthProvider;
 use GuzzleHttp\Client as GuzzleClient;
 use GuzzleHttp\Exception\RequestException;
 use GuzzleHttp\Handler\MockHandler;
@@ -14,6 +16,8 @@ use GuzzleHttp\HandlerStack;
 use GuzzleHttp\Middleware;
 use GuzzleHttp\Psr7\Request;
 use GuzzleHttp\Psr7\Response;
+use League\OAuth2\Client\Provider\GenericProvider;
+use League\OAuth2\Client\Token\AccessTokenInterface;
 use PHPUnit\Framework\TestCase;
 
 class FreespokeTest extends TestCase
@@ -30,7 +34,7 @@ class FreespokeTest extends TestCase
             'base_uri' => 'https://api.example.test/',
         ]);
 
-        return new PartnerClient($httpClient, 'test-token');
+        return new PartnerClient($httpClient, new APIKeyAuthProvider('test-token'));
     }
 
     private function makeArticle(string $imageUrl = 'https://example.com/image.jpg'): Article
@@ -231,5 +235,117 @@ class FreespokeTest extends TestCase
 
         $this->expectException(RequestException::class);
         $client->getIndexStatus('job-abc');
+    }
+
+    // --- OAuth2 client credentials tests ---
+
+    private function buildOAuthClient(array $apiResponses, array &$history, GenericProvider $provider): PartnerClient
+    {
+        $mock = new MockHandler($apiResponses);
+        $history = [];
+        $handlerStack = HandlerStack::create($mock);
+        $handlerStack->push(Middleware::history($history));
+
+        $httpClient = new GuzzleClient([
+            'handler' => $handlerStack,
+            'base_uri' => 'https://api.example.test/',
+        ]);
+
+        return new PartnerClient($httpClient, new TokenAuthProvider($provider));
+    }
+
+    private function mockProvider(string $token, bool $expired = false): GenericProvider
+    {
+        $accessToken = $this->createMock(AccessTokenInterface::class);
+        $accessToken->method('getToken')->willReturn($token);
+        $accessToken->method('hasExpired')->willReturn($expired);
+
+        $provider = $this->createMock(GenericProvider::class);
+        $provider->expects($this->once())
+            ->method('getAccessToken')
+            ->with('client_credentials')
+            ->willReturn($accessToken);
+
+        return $provider;
+    }
+
+    public function testOAuthClientSendsExchangedTokenAsBearer(): void
+    {
+        $history = [];
+        $client = $this->buildOAuthClient([
+            new Response(200, ['Content-Type' => 'application/json'], json_encode([
+                'epoch' => 7,
+            ])),
+        ], $history, $this->mockProvider('oauth-access-token-xyz'));
+
+        $epoch = $client->getEpoch();
+
+        $this->assertSame(7, $epoch);
+        $this->assertCount(1, $history);
+        $this->assertSame(
+            'Bearer oauth-access-token-xyz',
+            $history[0]['request']->getHeaderLine('Authorization'),
+        );
+    }
+
+    public function testOAuthClientCachesTokenAcrossRequests(): void
+    {
+        // The provider mock expects exactly one call to getAccessToken,
+        // but we make two API requests — proving the token is cached.
+        $accessToken = $this->createMock(AccessTokenInterface::class);
+        $accessToken->method('getToken')->willReturn('cached-token');
+        $accessToken->method('hasExpired')->willReturn(false);
+
+        $provider = $this->createMock(GenericProvider::class);
+        $provider->expects($this->once())
+            ->method('getAccessToken')
+            ->with('client_credentials')
+            ->willReturn($accessToken);
+
+        $history = [];
+        $client = $this->buildOAuthClient([
+            new Response(200, ['Content-Type' => 'application/json'], json_encode(['epoch' => 1])),
+            new Response(200, ['Content-Type' => 'application/json'], json_encode(['epoch' => 2])),
+        ], $history, $provider);
+
+        $client->getEpoch();
+        $client->getEpoch();
+
+        $this->assertCount(2, $history);
+        $this->assertSame('Bearer cached-token', $history[0]['request']->getHeaderLine('Authorization'));
+        $this->assertSame('Bearer cached-token', $history[1]['request']->getHeaderLine('Authorization'));
+    }
+
+    public function testOAuthClientRefreshesExpiredToken(): void
+    {
+        $expiredToken = $this->createMock(AccessTokenInterface::class);
+        $expiredToken->method('getToken')->willReturn('old-token');
+        // On the second getToken() call the token is checked and found expired,
+        // triggering a refresh.  (The first call short-circuits at the null check,
+        // so hasExpired() is only ever invoked once.)
+        $expiredToken->method('hasExpired')->willReturn(true);
+
+        $freshToken = $this->createMock(AccessTokenInterface::class);
+        $freshToken->method('getToken')->willReturn('new-token');
+        $freshToken->method('hasExpired')->willReturn(false);
+
+        $provider = $this->createMock(GenericProvider::class);
+        $provider->expects($this->exactly(2))
+            ->method('getAccessToken')
+            ->with('client_credentials')
+            ->willReturnOnConsecutiveCalls($expiredToken, $freshToken);
+
+        $history = [];
+        $client = $this->buildOAuthClient([
+            new Response(200, ['Content-Type' => 'application/json'], json_encode(['epoch' => 1])),
+            new Response(200, ['Content-Type' => 'application/json'], json_encode(['epoch' => 2])),
+        ], $history, $provider);
+
+        $client->getEpoch();
+        $client->getEpoch();
+
+        $this->assertCount(2, $history);
+        $this->assertSame('Bearer old-token', $history[0]['request']->getHeaderLine('Authorization'));
+        $this->assertSame('Bearer new-token', $history[1]['request']->getHeaderLine('Authorization'));
     }
 }

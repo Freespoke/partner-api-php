@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Freespoke\Partner;
 
 use GuzzleHttp\Client as Guzzle;
+use League\OAuth2\Client\Provider\GenericProvider;
 
 /**
  * Default API base URL.
@@ -12,30 +13,36 @@ use GuzzleHttp\Client as Guzzle;
 const DEFAULT_BASE_URL = 'https://api.partners.freespoke.com';
 
 /**
+ * Default URL for token exchange.
+ */
+const DEFAULT_TOKEN_URL = 'https://accounts.freespoke.com/realms/freespoke/protocol/openid-connect/token';
+
+/**
  * Client for the Freespoke Partner API REST gateway.
+ *
+ * Supports two authentication modes:
+ * - Static API key (bearer token) via {@see create()} or the constructor.
+ * - OAuth2 client credentials via {@see createWithClientCredentials()}.
  */
 class Client
 {
-    /** @var Guzzle */
     private Guzzle $client;
-
-    /** @var string */
-    private readonly string $apiKey;
+    private AuthProvider $auth;
 
     /**
-     * @param Guzzle $httpClient Pre-configured HTTP client instance.
-     * @param string $apiKey Bearer token value (without the "Bearer " prefix).
+     * @param Guzzle       $httpClient Pre-configured HTTP client instance.
+     * @param AuthProvider $auth       Authentication provider.
      */
-    public function __construct(Guzzle $httpClient, string $apiKey)
+    public function __construct(Guzzle $httpClient, AuthProvider $auth)
     {
         $this->client = $httpClient;
-        $this->apiKey = $apiKey;
+        $this->auth = $auth;
     }
 
     /**
-     * Build a client with default Guzzle configuration.
+     * Build a client with static API key authentication.
      *
-     * @param string $apiKey Bearer token value (without the "Bearer " prefix).
+     * @param string $apiKey  Bearer token value (without the "Bearer " prefix).
      * @param string $baseURL Base URL for the Partner API.
      * @return Client
      */
@@ -45,7 +52,40 @@ class Client
             'base_uri' => rtrim($baseURL, '/') . '/',
         ]);
 
-        return new Client($httpClient, $apiKey);
+        return new self($httpClient, new APIKeyAuthProvider($apiKey));
+    }
+
+    /**
+     * Build a client that authenticates via OAuth2 client credentials.
+     *
+     * The client will exchange the client ID and secret for an access token
+     * at the given token URL and refresh it automatically when it expires.
+     *
+     * @param string $clientId     OAuth2 client ID.
+     * @param string $clientSecret OAuth2 client secret.
+     * @param string $tokenURL     Token endpoint URL. Defaults to the Freespoke token endpoint.
+     * @param string $baseURL      Base URL for the Partner API.
+     * @return Client
+     */
+    public static function createWithClientCredentials(
+        string $clientId,
+        string $clientSecret,
+        string $tokenURL = DEFAULT_TOKEN_URL,
+        string $baseURL = DEFAULT_BASE_URL,
+    ): Client {
+        $httpClient = new Guzzle([
+            'base_uri' => rtrim($baseURL, '/') . '/',
+        ]);
+
+        $provider = new GenericProvider([
+            'clientId'                => $clientId,
+            'clientSecret'            => $clientSecret,
+            'urlAuthorize'            => '',
+            'urlAccessToken'          => $tokenURL,
+            'urlResourceOwnerDetails' => '',
+        ]);
+
+        return new self($httpClient, new TokenAuthProvider($provider));
     }
 
     /**
@@ -137,7 +177,7 @@ class Client
         $options['headers'] = array_merge(
             $options['headers'] ?? [],
             [
-                'Authorization' => 'Bearer ' . $this->apiKey,
+                'Authorization' => 'Bearer ' . $this->auth->getToken(),
                 'Accept' => 'application/json',
             ]
         );

@@ -6,6 +6,7 @@ A lightweight PHP client for the Freespoke Partner API REST gateway.
 
 - PHP 8.0+
 - Guzzle 7.10+
+- league/oauth2-client 2.7+ (for client credentials auth)
 
 ## Installation
 
@@ -71,6 +72,8 @@ $epoch = $client->getEpoch();
 
 ## Client construction
 
+### API key (static token)
+
 Use the static helper:
 
 ```php
@@ -91,15 +94,34 @@ $http = new GuzzleClient([
 $client = new Client($http, $apiKey);
 ```
 
+### OAuth2 client credentials
+
+For service accounts, use `createWithClientCredentials()`. The client will exchange the client ID and secret for an access token automatically and refresh it when it expires.
+
+```php
+use Freespoke\Partner\Client;
+
+// Uses the default Freespoke token endpoint (https://accounts.freespoke.com/realms/freespoke/...).
+$client = Client::createWithClientCredentials(
+    clientId:     getenv('PARTNER_CLIENT_ID'),
+    clientSecret: getenv('PARTNER_CLIENT_SECRET'),
+);
+
+// Use exactly like an API-key client — token management is transparent.
+$result = $client->index($article);
+```
+
+Both `tokenURL` and `baseURL` can be overridden if needed (e.g. for testing or local development).
+
 ## Authentication
 
-All requests use bearer token auth:
+Both authentication modes produce the same HTTP header on every request:
 
 ```
 Authorization: Bearer <token>
 ```
 
-Pass only the token value to the client (do not include the `Bearer` prefix).
+With `Client::create()`, you provide the token directly. With `Client::createWithClientCredentials()`, the token is obtained (and refreshed) from the OAuth2 token endpoint automatically.
 
 ## Data model
 
